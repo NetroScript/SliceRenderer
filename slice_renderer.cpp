@@ -16,6 +16,10 @@
 
 #include "cgv/media/image/image_writer.h"
 
+#include <fstream>
+
+#include "fpng.h"
+
 namespace cgv {
 	namespace reflect {
 	}
@@ -64,6 +68,8 @@ slice_renderer::slice_renderer() : application_plugin("Slice Renderer")
 	transfer_function_legend_ptr = register_overlay<cgv::app::color_map_legend>("Legend");
 	transfer_function_legend_ptr->set_title("Density");
 	transfer_function_legend_ptr->set_visibility(false);
+
+	fpng::fpng_init();
 }
 
 void slice_renderer::stream_stats(std::ostream& os)
@@ -127,13 +133,15 @@ bool slice_renderer::handle_event(cgv::gui::event& e)
 			resize_render_target(1024, 1024);
 			return true;
 		// When pressing S, we want to output a copy of the current frame to a file
-		case 'S':
+		case 'P':
 			// Set the flag that we want to generate a screenshot
 			store_next_screenshot = true;
 			// As a filename, just call it output.png
 			screenshot_filename = "output.tiff";
 			return true;
-		
+		case 'S':
+			dump_image_to_path("output.png");
+			return true;
 			
 		default: break;
 		}
@@ -793,6 +801,75 @@ void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)
 	std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 	// Log how long it took to generate the screenshot with the specific name
 	std::cout << "Screenshot " << filename << " generated in " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+}
+
+void slice_renderer::dump_image_to_path(const std::string& file_path)
+{
+	if(auto ctx_ptr = get_context())
+	{
+		// Only png is supported with this implementation
+		std::string extension = "png";
+
+		// Extract the extension from the file name
+		const std::string::size_type pos = file_path.find_last_of('.');
+		
+		
+
+		// Check if the file already exists on the disk, if so append a number to the file name
+		std::string filename = file_path;
+
+		// Ensure filename has png as extension
+		filename = filename.substr(0, pos) + "." + extension;
+		
+		// Check if the file already exists on the disk, if so append a number to the file name
+		if (cgv::utils::file::exists(filename))
+		{
+			int i = 0;
+			do
+			{
+				filename = file_path.substr(0, pos) + "_" + std::to_string(i) + "." + extension;
+				++i;
+			} while (cgv::utils::file::exists(filename));
+		}
+		
+		// Time the screenshot generation
+		std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
+
+		// We have the image we want in a buffer, and in that buffer in a texture, so enable that texture
+		volume_frame_buffer.enable_attachment(*ctx_ptr, "COLOR", 0);
+
+		// Next create a GLubyte array to store the data
+		GLubyte* data = new GLubyte[volume_frame_buffer.get_size().x() * volume_frame_buffer.get_size().y() * 4];
+
+		// Read the data from the texture into the array
+		glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+
+		// Disable the attachment
+		volume_frame_buffer.disable_attachment(*ctx_ptr, "COLOR");
+
+		// Create a buffer to store the data
+		std::vector<uint8_t> data_buffer;
+
+		// Use fpng to write the data into the buffer
+		fpng::fpng_encode_image_to_memory( data, volume_frame_buffer.get_size().x(), volume_frame_buffer.get_size().y(), 4, data_buffer);
+
+		// Write the buffer to the file using a fstream
+		std::ofstream file(filename, std::ios::out | std::ios::binary);
+
+		// Write the data to the file
+		file.write(reinterpret_cast<char*>(data_buffer.data()), data_buffer.size());
+
+		// Close the file
+		file.close();
+		
+		// Get the time it took to generate the image
+		std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
+		// Log how long it took to generate the screenshot with the specific name
+		std::cout << "Screenshot " << filename << " generated in " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+	} else
+	{
+		std::cerr << "Failed to get context" << std::endl;
+	}
 }
 
 #include <cgv/base/register.h>

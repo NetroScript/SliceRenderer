@@ -82,6 +82,8 @@ protected:
 	void resize_render_target(int width, int height);
 
 	void save_buffer_to_file(cgv::render::context& ctx);
+	void dump_image_to_path(const std::string& file_path);
+
 public:
 	// default constructor
 	slice_renderer();
