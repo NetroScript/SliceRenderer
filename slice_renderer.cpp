@@ -34,7 +34,10 @@ slice_renderer::slice_renderer() : application_plugin("Slice Renderer")
 	store_next_screenshot = false;
 
 	volume_frame_buffer.add_attachment("COLOR", "uint8[R,G,B,A]");
-	
+
+	// Initialize random number generator
+	rng = std::mt19937(std::chrono::system_clock::now().time_since_epoch().count());
+	dist = std::uniform_real_distribution<float>(0.0f, 1.0f);
 	
 
 	// configure texture format, filtering and wrapping (no context necessary)
@@ -138,11 +141,19 @@ bool slice_renderer::handle_event(cgv::gui::event& e)
 			return true;
 		// When pressing I, we want to resize the application to 512x512
 		case 'I':
-			resize_render_target(512, 512);
+			sample_width = 512;
+			sample_height = 512;
+			update_member(&sample_width);
+			update_member(&sample_height);
+			resize_render_target();
 			return true;
 		// When pressing O, we want to resize the application to 1024x1024
 		case 'O':
-			resize_render_target(1024, 1024);
+			sample_width = 1024;
+			sample_height = 1024;
+			update_member(&sample_width);
+			update_member(&sample_height);
+			resize_render_target();
 			return true;
 		// When pressing S, we want to output a copy of the current frame to a file
 		case 'P':
@@ -295,8 +306,9 @@ void slice_renderer::create_gui()
 	add_decorator("Generation Parameters", "heading", "level=3");
 	add_member_control(this, "Randomize Zoom", randomize_zoom, "check");
 	add_member_control(this, "Sample Count", sample_count, "value_slider", "min=1;max=1000;step=1;");
-	add_member_control(this, "X Resolution", sample_width, "value_slider", "min=128;max=4096;step=1;");
-	add_member_control(this, "Y Resolution", sample_height, "value_slider", "min=128;max=4096;step=1;");
+	add_member_control(this, "X Resolution", sample_width, "value_slider", "min=128;max=4096;step=32;");
+	add_member_control(this, "Y Resolution", sample_height, "value_slider", "min=128;max=4096;step=32;");
+	connect_copy(add_button("Apply Resolution")->click, cgv::signal::rebind(this, &slice_renderer::resize_render_target));
 	connect_copy(add_button("Generate Samples")->click, cgv::signal::rebind(this, &slice_renderer::generate_samples));
 	
 	
@@ -735,7 +747,14 @@ void slice_renderer::create_histogram() {
 		transfer_function_editor_ptr->set_histogram_data(histogram);
 }
 
+// Uniformly sample a point on the surface of a sphere
+cgv::render::vec3 slice_renderer::sample_sphere()
+{
+	const float theta = 2.0f * PI * dist(rng);
+	const float phi = acos(1.0f - 2.0f * dist(rng));
 
+	return vec3(sin(phi) * cos(theta), sin(phi) * sin(theta), cos(phi));
+}
 
 void slice_renderer::center_and_zoom(float zoom = 1.0f) const
 {
@@ -781,25 +800,53 @@ void slice_renderer::center_and_zoom(float zoom = 1.0f) const
 	}
 }
 
-void slice_renderer::resize_render_target(int width, int height) const
+void slice_renderer::resize_render_target() const
 {
 	if(const auto ctx_ptr = get_context())
 	{
 		// To resize our render target, we resize our context's render target.
-		ctx_ptr->resize(width, height);
+		ctx_ptr->resize(sample_width, sample_height);
 
 		center_and_zoom();
 	}
 
 }
 
-void slice_renderer::generate_samples() const
+void slice_renderer::generate_samples()
 {
 
-	// Change our resolution once to the desired resolution
-	resize_render_target(sample_width, sample_height);
 	
 	std::cout << "Generating " << sample_count << " samples ..." << std::endl;
+
+	// Get the context
+	const auto ctx_ptr = get_context();
+
+	// Exit if we don't have a context
+	if (!ctx_ptr)
+	{
+		std::cout << "No context found!" << std::endl;
+		return;
+	}
+
+	ctx_ptr->force_redraw();
+	
+	// Generate the samples
+	for (size_t i = 0; i < sample_count; ++i)
+	{
+		// Generate a random rotation
+		const auto view_rotation = sample_sphere();
+		const auto view_rotation_up = sample_sphere();
+
+		// Set the rotation of the view
+		view_ptr->set_view_dir(view_rotation);
+		view_ptr->set_view_up_dir(view_rotation_up);
+
+		// Cause a redraw
+		ctx_ptr->force_redraw();
+
+		// Save the image to the output directory
+		dump_image_to_path("./out/generation.png");
+	}
 }
 
 void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)

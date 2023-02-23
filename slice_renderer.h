@@ -43,7 +43,9 @@ protected:
 	int sample_width;
 	int sample_height;
 
-	
+	// For random number generation have a random engine and a distribution
+	std::mt19937 rng;
+	std::uniform_real_distribution<float> dist;
 
 	// Information needed to store the next screenshot to disk
 	bool store_next_screenshot;
@@ -89,12 +91,14 @@ protected:
 	void fit_to_spacing();
 	void fit_to_resolution_and_spacing();
 
+	vec3 sample_sphere();
+
 	void create_histogram();
 	void center_and_zoom(float zoom) const;
 
 	// Have a function allowing to resize our render target
-	void resize_render_target(int width, int height) const;
-	void generate_samples() const;
+	void resize_render_target() const;
+	void generate_samples();
 
 	void save_buffer_to_file(cgv::render::context& ctx);
 	void dump_image_to_path(const std::string& file_path);
