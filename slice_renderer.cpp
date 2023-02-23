@@ -19,6 +19,7 @@
 #include <fstream>
 
 #include "fpng.h"
+#include "cgv/math/constants.h"
 
 namespace cgv {
 	namespace reflect {
@@ -48,6 +49,13 @@ slice_renderer::slice_renderer() : application_plugin("Slice Renderer")
 	vstyle.enable_depth_test = false;
 
 	show_box = false;
+
+	sample_count = 150;
+
+	randomize_zoom = false;
+
+	sample_width = 1024;
+	sample_height = 1024;
 	
 	
 	vres = uvec3(128);
@@ -79,8 +87,12 @@ void slice_renderer::stream_stats(std::ostream& os)
 
 bool slice_renderer::self_reflect(cgv::reflect::reflection_handler& rh)
 {
-	return
-		rh.reflect_member("show_box", show_box);
+	return rh.reflect_member("show_box", show_box) &&
+		rh.reflect_member("sample_count", sample_count) &&
+		rh.reflect_member("randomize_zoom", randomize_zoom) &&
+		rh.reflect_member("sample_width", sample_width) &&
+		rh.reflect_member("sample_height", sample_height);
+			
 }
 
 void slice_renderer::stream_help(std::ostream& os) 
@@ -277,8 +289,16 @@ void slice_renderer::after_finish(cgv::render::context& context)
 void slice_renderer::create_gui() 
 {
 	add_decorator("Volume Viewer", "heading", "level=2");
-
+	
 	add_member_control(this, "Show Box", show_box, "check");
+
+	add_decorator("Generation Parameters", "heading", "level=3");
+	add_member_control(this, "Randomize Zoom", randomize_zoom, "check");
+	add_member_control(this, "Sample Count", sample_count, "value_slider", "min=1;max=1000;step=1;");
+	add_member_control(this, "X Resolution", sample_width, "value_slider", "min=128;max=4096;step=1;");
+	add_member_control(this, "Y Resolution", sample_height, "value_slider", "min=128;max=4096;step=1;");
+	connect_copy(add_button("Generate Samples")->click, cgv::signal::rebind(this, &slice_renderer::generate_samples));
+	
 	
 	if(begin_tree_node("Volume Rendering", vstyle, true)) {
 		align("\a");
@@ -715,34 +735,71 @@ void slice_renderer::create_histogram() {
 		transfer_function_editor_ptr->set_histogram_data(histogram);
 }
 
-void slice_renderer::resize_render_target(int width, int height)
+
+
+void slice_renderer::center_and_zoom(float zoom = 1.0f) const
 {
-	if(auto ctx_ptr = get_context())
+	
+	if (view_ptr)
 	{
-		// Print the zoom
-		std::cout << "Zoom: " << view_ptr->get_y_extent_at_focus() << std::endl;
+
+		// Ensure the focus point in the center
+		view_ptr->set_focus(vec3(0.0f, 0.0f, 0.0f));
+
+		// Set the FOV to 90 degrees
+		view_ptr->set_y_view_angle(90.0);
+
+		// Get the angle by subtracting 90 of the FOV and convert it to radians
+		const float angle = (90.0 - view_ptr->get_y_view_angle() * 0.5) * PI / 180.0;
+
+		
+		// Get the radius of the bounding box
+		const float radius = volume_bounding_box.get_extent().length();
+
+		// In our viewport we want to show the entire bounding sphere, not only the top point
+		// To calculate the y_extent_at_focus we use the radius as the height in a right-angled triangle with the FOV as the angle
+		// The y_extent_at_focus is the distance from the focus point to the top of the viewport
+		// So our setup is the following:
+		/*
+		|\ --- y_extent_at_focus
+		| \   
+		|  \ radius (of the bounding box)
+	  a |  /\
+		| /r \ c
+		|/    \
+  90deg |------| <- angle = y_view_angle 
+			b
+		*/
+		// We can calculate the height of the triangle with the following formula:
+		// we need the angle between a and c, which is 90 - angle (in degrees)
+		// radius = sin(0.5 PI - angle) * y_extent_at_focus
+		// y_extent_at_focus = radius / sin(0.5 PI - angle)
+		
+		// Set the y_extent_at_focus to always show the entire bounding box
+		view_ptr->set_y_extent_at_focus((radius / sin(angle))*zoom);
+		
+	}
+}
+
+void slice_renderer::resize_render_target(int width, int height) const
+{
+	if(const auto ctx_ptr = get_context())
+	{
 		// To resize our render target, we resize our context's render target.
 		ctx_ptr->resize(width, height);
 
-		// Update the bounding box to fill the screen
-		volume_bounding_box.ref_min_pnt() = vec3(-1.0f);
-		volume_bounding_box.ref_max_pnt() = vec3(1.0f);
-
-		update_bounding_box();
-
-		if (view_ptr)
-		{
-			// Zoom out a little bit so we cover the complete bounding box by default
-			view_ptr->set_y_extent_at_focus(3.75);
-
-			// Print the zoom
-			std::cout << "Zoom: " << view_ptr->get_y_extent_at_focus() << std::endl;
-		}
-
-		
-		
+		center_and_zoom();
 	}
 
+}
+
+void slice_renderer::generate_samples() const
+{
+
+	// Change our resolution once to the desired resolution
+	resize_render_target(sample_width, sample_height);
+	
+	std::cout << "Generating " << sample_count << " samples ..." << std::endl;
 }
 
 void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)

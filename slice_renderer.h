@@ -33,12 +33,25 @@ protected:
 	/// whether to show bounding box
 	bool show_box;
 
+	// The amount of samples to generate
+	int sample_count;
+
+	// Whether the zoom should also be randomized during sampling
+	bool randomize_zoom;
+
+	// The target width and height of the sample
+	int sample_width;
+	int sample_height;
+
+	
+
 	// Information needed to store the next screenshot to disk
 	bool store_next_screenshot;
 	std::string screenshot_filename;
 
 	// Framebuffer for volume
 	cgv::render::managed_frame_buffer volume_frame_buffer;
+	
 	
 
 	// Volume data
@@ -77,9 +90,11 @@ protected:
 	void fit_to_resolution_and_spacing();
 
 	void create_histogram();
+	void center_and_zoom(float zoom) const;
 
 	// Have a function allowing to resize our render target
-	void resize_render_target(int width, int height);
+	void resize_render_target(int width, int height) const;
+	void generate_samples() const;
 
 	void save_buffer_to_file(cgv::render::context& ctx);
 	void dump_image_to_path(const std::string& file_path);
