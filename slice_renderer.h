@@ -101,7 +101,7 @@ protected:
 	void generate_samples();
 
 	void save_buffer_to_file(cgv::render::context& ctx);
-	void dump_image_to_path(const std::string& file_path);
+	const std::string dump_image_to_path(const std::string& file_path);
 
 public:
 	// default constructor

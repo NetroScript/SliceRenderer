@@ -1,6 +1,7 @@
 #include "slice_renderer.h"
 
 #include <chrono>
+#include <filesystem>
 #include <cgv/defines/quote.h>
 #include <cgv/gui/trigger.h>
 #include <cgv/gui/key_event.h>
@@ -13,13 +14,17 @@
 #include <cgv/utils/big_binary_file.h>
 #include <cgv_gl/gl/gl.h>
 #include <cgv_gl/gl/gl_tools.h>
+#include "cgv/math/constants.h"
+
 
 #include "cgv/media/image/image_writer.h"
 
 #include <fstream>
 
 #include "fpng.h"
-#include "cgv/math/constants.h"
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 
 namespace cgv {
 	namespace reflect {
@@ -793,9 +798,19 @@ void slice_renderer::center_and_zoom(float zoom = 1.0f) const
 		// we need the angle between a and c, which is 90 - angle (in degrees)
 		// radius = sin(0.5 PI - angle) * y_extent_at_focus
 		// y_extent_at_focus = radius / sin(0.5 PI - angle)
+
+
+		// Also get the aspect ratio between width and height
+		// If it is wider than it is high, we need to adjust the y_extent_at_focus
+		const float aspect_ratio = static_cast<float>(sample_width) / static_cast<float>(sample_height);
+
+		const float extent_factor = (radius / sin(angle))*zoom;
 		
-		// Set the y_extent_at_focus to always show the entire bounding box
-		view_ptr->set_y_extent_at_focus((radius / sin(angle))*zoom);
+		if (aspect_ratio >= 1.0f)
+			view_ptr->set_y_extent_at_focus(extent_factor);
+		// This fix is not mathematically correct, but it is relatively close, so sufficient for the rare cases 
+		else
+			view_ptr->set_y_extent_at_focus((extent_factor + extent_factor / aspect_ratio)/2.0f);
 		
 	}
 }
@@ -829,6 +844,38 @@ void slice_renderer::generate_samples()
 	}
 
 	ctx_ptr->force_redraw();
+
+	// Delete the old output folder
+	if (std::filesystem::exists("./out/images"))
+	{
+		std::filesystem::remove_all("./out/images");
+	}
+	
+	// Create the folder again
+	std::filesystem::create_directory("./out/images");
+		
+
+	// Create the JSON data structure which stores information about the samples
+
+	// After taking a look at all possible parameters
+	//	'camera_angle_x', 'camera_angle_y', 'fl_x', 'fl_y', 'k1', 'k2', 'k3', 'k4', 'p1', 'p2', 'is_fisheye', 'cx', 'cy', 'w', 'h', 'aabb_scale'
+	// most of them are actually optional and not needed for our use case, additionally instead of 'camera_angle_x' and 'camera_angle_y' one could also use either 'fl_x' and 'fl_y' or "x_fov" and "y_fov", as only one of them is read
+	// So for easier use we use x_fov and y_fov in degrees, as we have them available in the view
+	// cx and cy can also be left out, as they are set to the center of the image by default and in the generated samples
+
+	// Calculate the X fov from the Y fov
+	const float aspect_ratio = static_cast<float>(sample_width) / static_cast<float>(sample_height);
+	const float x_fov = 2.0f * std::atan(std::tan(view_ptr->get_y_view_angle() * 0.5f * PI / 180.0f) * aspect_ratio) * 180.0f / PI;
+
+	json frames_array = json::array();
+
+	json sample_info = {
+		{"y_fov", view_ptr->get_y_view_angle()},
+		{"x_fov", x_fov},
+		{"w", sample_width},
+		{"h", sample_height},
+		{"frames", frames_array}
+	};
 	
 	// Generate the samples
 	for (size_t i = 0; i < sample_count; ++i)
@@ -845,8 +892,51 @@ void slice_renderer::generate_samples()
 		ctx_ptr->force_redraw();
 
 		// Save the image to the output directory
-		dump_image_to_path("./out/generation.png");
+		const std::string filename = dump_image_to_path("./out/images/generation.png");
+
+		// Remove the out directory from the path
+		const std::string file_path = filename.substr(5);
+
+		// Store the information about the sample in the JSON data structure
+		// The data structure normally is file_path, sharpness and transform_matrix
+		// We can leave sharpness out as we take every image
+		// The transform matrix is a 4x4 matrix which represents the camera extrinsics
+		// They are in the following format:
+		// [+X0 +Y0 +Z0 X]
+		// [+X1 +Y1 +Z1 Y]
+		// [+X2 +Y2 +Z2 Z]
+		// [0.0 0.0 0.0 1]
+		// (See https://docs.nerf.studio/en/latest/quickstart/data_conventions.html for details)
+
+		// Get the camera position
+		const auto camera_position = view_ptr->get_eye();
+		auto forward = cgv::math::normalize(view_ptr->get_focus() - camera_position);
+		const auto right = cgv::math::normalize(cgv::math::cross(forward, view_ptr->get_view_up_dir()));
+		const auto upward = cgv::math::normalize(cgv::math::cross(right, forward));
+
+		// Construct the new json object
+		frames_array += {
+			{"file_path", file_path},
+			{
+				"transform_matrix",
+				{
+					{right(0), upward(0), -forward(0), camera_position(0)},
+					{right(1), upward(1), -forward(1), camera_position(1)},
+					{right(2), upward(2), -forward(2), camera_position(2)},
+					{0, 0, 0, 1}
+				}
+			}
+		};
 	}
+
+	// Make sure frames_array is in the json data structure
+	sample_info["frames"] = frames_array;
+
+	// Write the JSON data structure to a file transforms.json
+	// Write it to console that the file was written
+	std::cout << "Writing sample info to file ..." << std::endl;
+	std::ofstream file("./out/transforms.json");
+	file << sample_info.dump(2);
 }
 
 void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)
@@ -907,7 +997,7 @@ void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)
 	std::cout << "Screenshot " << filename << " generated in " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
 }
 
-void slice_renderer::dump_image_to_path(const std::string& file_path)
+const std::string slice_renderer::dump_image_to_path(const std::string& file_path)
 {
 	if(auto ctx_ptr = get_context())
 	{
@@ -970,9 +1060,11 @@ void slice_renderer::dump_image_to_path(const std::string& file_path)
 		std::chrono::steady_clock::time_point end = std::chrono::steady_clock::now();
 		// Log how long it took to generate the screenshot with the specific name
 		std::cout << "Screenshot " << filename << " generated in " << std::chrono::duration_cast<std::chrono::milliseconds>(end - start).count() << "ms" << std::endl;
+		return filename;
 	} else
 	{
 		std::cerr << "Failed to get context" << std::endl;
+		return "";
 	}
 }
 
