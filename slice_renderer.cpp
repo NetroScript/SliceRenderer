@@ -318,6 +318,9 @@ void slice_renderer::create_gui()
 	add_member_control(this, "Y Resolution", sample_height, "value_slider", "min=128;max=4096;step=32;");
 	connect_copy(add_button("Apply Resolution")->click, cgv::signal::rebind(this, &slice_renderer::resize_render_target));
 	connect_copy(add_button("Generate Samples")->click, cgv::signal::rebind(this, &slice_renderer::generate_samples));
+	add_decorator("Data Exports", "heading", "level=3");
+	connect_copy(add_button("Export Transfer Function")->click, cgv::signal::rebind(this, &slice_renderer::export_transfer_function));
+	connect_copy(add_button("Export Volume")->click, cgv::signal::rebind(this, &slice_renderer::export_volume_data));
 	
 	
 	if(begin_tree_node("Volume Rendering", vstyle, true)) {
@@ -972,6 +975,90 @@ void slice_renderer::generate_samples()
 	std::cout << "Writing sample info to file ..." << std::endl;
 	std::ofstream file("./out/transforms.json");
 	file << sample_info.dump(2);
+}
+
+void slice_renderer::export_transfer_function()
+{
+	if(auto ctx_ptr = get_context())
+	{
+		auto texture_reference = transfer_function.ref_texture();
+
+		// Get the source texture from opengl using glGetTexImage
+		// The texture is a 1D texture with 4 components (RGBA)
+
+		const int width = texture_reference.get_width();
+		
+		// Create a vector to store the texture data
+		GLubyte* texture_data = new GLubyte[width * 4];
+
+		// Activate the texture unit
+		texture_reference.enable(*ctx_ptr);
+
+		// Get the texture data
+		glGetTexImage(GL_TEXTURE_1D, 0, GL_RGBA, GL_UNSIGNED_BYTE, texture_data);
+
+		// Get last error
+		const auto error = glGetError();
+
+		if (error != GL_NO_ERROR)
+		{
+			std::cout << "Error while getting texture data: " << error << std::endl;
+		}
+
+		// Deactivate the texture unit
+		texture_reference.disable(*ctx_ptr);
+
+		// Save the texture data to a file
+
+		// Create a buffer to store the data
+		std::vector<uint8_t> data_buffer;
+
+		// Use fpng to write the data into the buffer
+		fpng::fpng_encode_image_to_memory( texture_data, width, 1, 4, data_buffer);
+
+		// Write the buffer to the file using a fstream
+		std::ofstream file("./out/transfer_function.png", std::ios::out | std::ios::binary);
+
+		// Write the data to the file
+		file.write(reinterpret_cast<char*>(data_buffer.data()), data_buffer.size());
+
+		// Close the file
+		file.close();
+
+		std::cout << "Wrote transfer function to file: " << "./out/transfer_function.png" << std::endl;
+	} 
+}
+
+void slice_renderer::export_volume_data()
+{
+	if(auto ctx_ptr = get_context())
+	{
+		// Create a vector<char> representing the volume by converting the current volume to a 8 bit unsigned integer
+		std::vector<uint8_t> volume_data(vres[0] * vres[1] * vres[2]);
+
+		// Iterate the old floating point based volume and store the values in the new vector
+		for (size_t i = 0; i < volume_data.size(); ++i)
+		{
+			volume_data[i] = static_cast<uint8_t>(255.0f * vol_data[i]);
+		}
+
+		// Write this vector to a file
+		std::ofstream file("./out/volume_data.vox", std::ios::binary);
+
+		file.write(reinterpret_cast<char*>(volume_data.data()), volume_data.size());
+
+		file.close();
+
+		// We additionally create a header for the file which contains the resolution of the volume
+		// For that create a .hd file with the same name where we just write in the resolution as text
+		std::ofstream header_file("./out/volume_data.hd");
+
+		header_file << "Size " << vres[0] << "x" << vres[1] << "x" << vres[2];
+
+		header_file.close();
+
+		std::cout << "Wrote volume data to file: " << "./out/volume_data.vox" << std::endl;
+	} 
 }
 
 void slice_renderer::save_buffer_to_file(cgv::render::context& ctx)

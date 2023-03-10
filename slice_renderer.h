@@ -100,6 +100,8 @@ protected:
 	// Have a function allowing to resize our render target
 	void resize_render_target() const;
 	void generate_samples();
+	void export_transfer_function();
+	void export_volume_data();
 
 	void save_buffer_to_file(cgv::render::context& ctx);
 	const std::string dump_image_to_path(const std::string& file_path);
