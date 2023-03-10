@@ -61,6 +61,7 @@ slice_renderer::slice_renderer() : application_plugin("Slice Renderer")
 	sample_count = 150;
 
 	randomize_zoom = false;
+	randomize_offset = false;
 
 	sample_width = 1024;
 	sample_height = 1024;
@@ -98,6 +99,7 @@ bool slice_renderer::self_reflect(cgv::reflect::reflection_handler& rh)
 	return rh.reflect_member("show_box", show_box) &&
 		rh.reflect_member("sample_count", sample_count) &&
 		rh.reflect_member("randomize_zoom", randomize_zoom) &&
+		rh.reflect_member("randomize_offset", randomize_offset) &&
 		rh.reflect_member("sample_width", sample_width) &&
 		rh.reflect_member("sample_height", sample_height);
 			
@@ -310,6 +312,7 @@ void slice_renderer::create_gui()
 
 	add_decorator("Generation Parameters", "heading", "level=3");
 	add_member_control(this, "Randomize Zoom", randomize_zoom, "check");
+	add_member_control(this, "Randomize Offset", randomize_offset, "check");
 	add_member_control(this, "Sample Count", sample_count, "value_slider", "min=1;max=1000;step=1;");
 	add_member_control(this, "X Resolution", sample_width, "value_slider", "min=128;max=4096;step=32;");
 	add_member_control(this, "Y Resolution", sample_height, "value_slider", "min=128;max=4096;step=32;");
@@ -771,7 +774,7 @@ void slice_renderer::center_and_zoom(float zoom = 1.0f) const
 		view_ptr->set_focus(vec3(0.0f, 0.0f, 0.0f));
 
 		// Set the FOV to 90 degrees
-		view_ptr->set_y_view_angle(90.0);
+		view_ptr->set_y_view_angle(45.0);
 
 		// Get the angle by subtracting 90 of the FOV and convert it to radians
 		const float angle = (90.0 - view_ptr->get_y_view_angle() * 0.5) * PI / 180.0;
@@ -836,6 +839,12 @@ void slice_renderer::generate_samples()
 	// Get the context
 	const auto ctx_ptr = get_context();
 
+	
+	auto old_gamma = ctx_ptr->get_gamma();
+		
+	ctx_ptr->set_gamma(1.0);
+
+
 	// Exit if we don't have a context
 	if (!ctx_ptr)
 	{
@@ -862,6 +871,8 @@ void slice_renderer::generate_samples()
 	// most of them are actually optional and not needed for our use case, additionally instead of 'camera_angle_x' and 'camera_angle_y' one could also use either 'fl_x' and 'fl_y' or "x_fov" and "y_fov", as only one of them is read
 	// So for easier use we use x_fov and y_fov in degrees, as we have them available in the view
 	// cx and cy can also be left out, as they are set to the center of the image by default and in the generated samples
+	// Additionally the parameter scale exists, as their default datasets are oversized, they have a scale of 0.33 for them
+	// We are already in a unit cube, so we can set it to 1
 
 	// Calculate the X fov from the Y fov
 	const float aspect_ratio = static_cast<float>(sample_width) / static_cast<float>(sample_height);
@@ -874,6 +885,7 @@ void slice_renderer::generate_samples()
 		{"x_fov", x_fov},
 		{"w", sample_width},
 		{"h", sample_height},
+		{"aabb_scale", 2.0f},
 		{"frames", frames_array}
 	};
 	
@@ -886,10 +898,31 @@ void slice_renderer::generate_samples()
 
 		// Set the rotation of the view
 		view_ptr->set_view_dir(view_rotation);
-		view_ptr->set_view_up_dir(view_rotation_up);
+		//view_ptr->set_view_up_dir(view_rotation_up);
+		// Set the up direction to the y axis
+		vec3 up_dir = { 0.0f, 1.0f, 0.0f };
+		view_ptr->set_view_up_dir(up_dir);
 
 		// Cause a redraw
 		ctx_ptr->force_redraw();
+
+		// Center and zoom the view
+
+		float zoom = 1.0f;
+		
+		if (randomize_zoom)
+		{
+			// Sample a normal distribution with mean 1.0 and small standard deviation
+			zoom = std::clamp(std::normal_distribution<float>(1.0f, 0.3f)(rng), 0.1f, 2.0f);
+		}
+		
+		center_and_zoom(zoom);
+
+		// Add very small left and right pan to the view
+		if (randomize_offset)
+		{
+			view_ptr->pan(dist(rng) - 0.5, dist(rng) - 0.5);
+		}
 
 		// Save the image to the output directory
 		const std::string filename = dump_image_to_path("./out/images/generation.png");
@@ -913,7 +946,7 @@ void slice_renderer::generate_samples()
 		auto forward = cgv::math::normalize(view_ptr->get_focus() - camera_position);
 		const auto right = cgv::math::normalize(cgv::math::cross(forward, view_ptr->get_view_up_dir()));
 		const auto upward = cgv::math::normalize(cgv::math::cross(right, forward));
-
+		
 		// Construct the new json object
 		frames_array += {
 			{"file_path", file_path},
@@ -921,13 +954,15 @@ void slice_renderer::generate_samples()
 				"transform_matrix",
 				{
 					{right(0), upward(0), -forward(0), camera_position(0)},
+					{-right(2), -upward(2), forward(2), -camera_position(2)},
 					{right(1), upward(1), -forward(1), camera_position(1)},
-					{right(2), upward(2), -forward(2), camera_position(2)},
 					{0, 0, 0, 1}
 				}
 			}
 		};
 	}
+
+	ctx_ptr->set_gamma(old_gamma);
 
 	// Make sure frames_array is in the json data structure
 	sample_info["frames"] = frames_array;
@@ -1041,6 +1076,19 @@ const std::string slice_renderer::dump_image_to_path(const std::string& file_pat
 		// Disable the attachment
 		volume_frame_buffer.disable_attachment(*ctx_ptr, "COLOR");
 
+		// Loop through the data and flip the image vertically
+		for (int i = 0; i < volume_frame_buffer.get_size().y() / 2; ++i)
+		{
+			for (int j = 0; j < volume_frame_buffer.get_size().x(); ++j)
+			{
+				for (int k = 0; k < 4; ++k)
+				{
+					std::swap(data[i * volume_frame_buffer.get_size().x() * 4 + j * 4 + k], data[(volume_frame_buffer.get_size().y() - i - 1) * volume_frame_buffer.get_size().x() * 4 + j * 4 + k]);
+				}
+			}
+		}
+
+		
 		// Create a buffer to store the data
 		std::vector<uint8_t> data_buffer;
 

@@ -38,6 +38,7 @@ protected:
 
 	// Whether the zoom should also be randomized during sampling
 	bool randomize_zoom;
+	bool randomize_offset;
 
 	// The target width and height of the sample
 	int sample_width;
