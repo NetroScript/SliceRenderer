@@ -1043,7 +1043,7 @@ void slice_renderer::export_volume_data()
 		}
 
 		// Write this vector to a file
-		std::ofstream file("./out/volume_data.vox", std::ios::binary);
+		std::ofstream file("./out/volume_data.vox", std::ios::binary | std::ios::out); 
 
 		file.write(reinterpret_cast<char*>(volume_data.data()), volume_data.size());
 
